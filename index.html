@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Operations Habit Tracker</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+    
+    <!-- Import Map for React & Icons -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.263.1"
+      }
+    }
+    </script>
+
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        /* Custom animations */
+        @keyframes slide-up {
+          from { transform: translateY(100%); }
+          to { transform: translateY(0); }
+        }
+        @keyframes slide-down {
+          from { transform: translateY(-100%); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        .animate-slide-up { animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .animate-slide-down { animation: slide-down 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body class="bg-[#C6D1C0]">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Plus, Trash2, Check, Zap, Calendar, X, BarChart3, ArrowUpRight, MoreHorizontal, Settings, Clock, MapPin, Bell, Candy, Minus, AlertCircle } from 'lucide-react';
+
+        // --- Utility Functions ---
+        const getLast7Days = () => {
+            const dates = [];
+            for (let i = 6; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                dates.push(d);
+            }
+            return dates;
+        };
+
+        const formatDateKey = (date) => date.toISOString().split('T')[0];
+        const formatDayName = (date) => date.toLocaleDateString('en-US', { weekday: 'short' });
+        
+        const convertTo12Hour = (time24) => {
+            if (!time24) return '';
+            const [hours, minutes] = time24.split(':');
+            const h = parseInt(hours, 10);
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            const h12 = h % 12 || 12;
+            return `${h12}:${minutes} ${ampm}`;
+        };
+
+        // --- Constants & Theme ---
+        const THEME = {
+            colors: {
+                bg: '#C6D1C0',
+                panel: '#1D1D1D',
+                card: '#2B2B2B',
+                accentYellow: '#F9E58C',
+                accentCoral: '#F25C54',
+                accentBlue: '#5A7BEF',
+                accentOrange: '#F7941D',
+                accentPink: '#FAD6DC',
+                success: '#9FE6A0',
+                textWhite: '#FFFFFF',
+                textGray: '#CCCCCC',
+                textBlack: '#000000',
+            }
+        };
+
+        const DEFAULT_HABITS = [
+            { id: 1, name: 'Morning Sync', category: 'Operations', color: 'accentCoral', icon: '📢', reminderTime: '09:00' },
+            { id: 2, name: 'Inventory Check', category: 'Logistics', color: 'accentYellow', icon: '📦', reminderTime: null },
+            { id: 3, name: 'Zero Inbox', category: 'Admin', color: 'accentBlue', icon: '📧', reminderTime: '17:00' },
+            { id: 4, name: 'Safety Walk', category: 'Safety', color: 'success', icon: '🛡️', reminderTime: null },
+        ];
+
+        const SUGAR_LIMIT = 30;
+
+        function App() {
+            // --- State ---
+            const [habits, setHabits] = useState(() => {
+                const saved = localStorage.getItem('habits');
+                return saved ? JSON.parse(saved) : DEFAULT_HABITS;
+            });
+
+            const [history, setHistory] = useState(() => {
+                const saved = localStorage.getItem('habit_history');
+                return saved ? JSON.parse(saved) : {};
+            });
+
+            const [sugarHistory, setSugarHistory] = useState(() => {
+                const saved = localStorage.getItem('sugar_history');
+                return saved ? JSON.parse(saved) : {};
+            });
+
+            const [prayerTimes, setPrayerTimes] = useState(null);
+            const [nextPrayer, setNextPrayer] = useState(null);
+            const [loadingPrayers, setLoadingPrayers] = useState(true);
+            
+            const [toastMessage, setToastMessage] = useState(null);
+            const lastNotifiedPrayer = useRef(null);
+            const notifiedHabits = useRef({}); 
+
+            const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+            const [newHabitName, setNewHabitName] = useState('');
+            const [newHabitTime, setNewHabitTime] = useState('');
+            const [selectedColor, setSelectedColor] = useState('accentCoral');
+
+            const todayKey = formatDateKey(new Date());
+
+            // --- Effects ---
+            useEffect(() => {
+                if ("Notification" in window) {
+                    Notification.requestPermission();
+                }
+            }, []);
+
+            useEffect(() => localStorage.setItem('habits', JSON.stringify(habits)), [habits]);
+            useEffect(() => localStorage.setItem('habit_history', JSON.stringify(history)), [history]);
+            useEffect(() => localStorage.setItem('sugar_history', JSON.stringify(sugarHistory)), [sugarHistory]);
+
+            const sendNotification = (title, body) => {
+                try {
+                    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+                    audio.volume = 0.5;
+                    audio.play().catch(e => console.log("Audio autoplay blocked:", e));
+                } catch (e) { console.error("Audio error", e); }
+
+                if ("Notification" in window && Notification.permission === "granted") {
+                    new Notification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/3028/3028567.png" });
+                }
+
+                setToastMessage({ title, body });
+                setTimeout(() => setToastMessage(null), 8000);
+            };
+
+            const checkHabitReminders = () => {
+                const now = new Date();
+                const currentHour = now.getHours().toString().padStart(2, '0');
+                const currentMin = now.getMinutes().toString().padStart(2, '0');
+                const currentTimeStr = `${currentHour}:${currentMin}`;
+                const todayStr = formatDateKey(now);
+
+                habits.forEach(habit => {
+                    if (habit.reminderTime === currentTimeStr) {
+                        if (notifiedHabits.current[habit.id] !== todayStr) {
+                            sendNotification(`Reminder: ${habit.name}`, "It's time to complete your protocol.");
+                            notifiedHabits.current[habit.id] = todayStr;
+                        }
+                    }
+                });
+            };
+
+            useEffect(() => {
+                const fetchPrayerTimes = async () => {
+                    try {
+                        const date = new Date();
+                        const timestamp = Math.floor(date.getTime() / 1000);
+                        const response = await fetch(`https://api.aladhan.com/v1/timings/${timestamp}?latitude=36.66&longitude=2.99&method=2`);
+                        const data = await response.json();
+                        
+                        if (data.code === 200) {
+                            const timings = data.data.timings;
+                            const mandatoryPrayers = {
+                                Fajr: timings.Fajr,
+                                Dhuhr: timings.Dhuhr,
+                                Asr: timings.Asr,
+                                Maghrib: timings.Maghrib,
+                                Isha: timings.Isha,
+                            };
+                            setPrayerTimes(mandatoryPrayers);
+                            checkPrayerTime(mandatoryPrayers);
+                        }
+                    } catch (error) {
+                        console.error("Failed to fetch prayer times", error);
+                    } finally {
+                        setLoadingPrayers(false);
+                    }
+                };
+
+                fetchPrayerTimes();
+                
+                const interval = setInterval(() => {
+                    if (prayerTimes) checkPrayerTime(prayerTimes);
+                    checkHabitReminders();
+                }, 60000);
+
+                return () => clearInterval(interval);
+            }, [prayerTimes, habits]);
+
+            const checkPrayerTime = (timings) => {
+                if (!timings) return;
+                
+                const now = new Date();
+                const currentMinutes = now.getHours() * 60 + now.getMinutes();
+                let next = null;
+                let minDiff = Infinity;
+
+                const currentHourStr = now.getHours().toString().padStart(2, '0');
+                const currentMinStr = now.getMinutes().toString().padStart(2, '0');
+                const currentTimeStr = `${currentHourStr}:${currentMinStr}`;
+
+                for (const [name, time] of Object.entries(timings)) {
+                    const [h, m] = time.split(':').map(Number);
+                    const prayerTimeMinutes = h * 60 + m;
+
+                    if (prayerTimeMinutes > currentMinutes && (prayerTimeMinutes - currentMinutes) < minDiff) {
+                        minDiff = prayerTimeMinutes - currentMinutes;
+                        next = { name, time, diff: minDiff };
+                    }
+
+                    if (time === currentTimeStr && lastNotifiedPrayer.current !== name) {
+                        lastNotifiedPrayer.current = name;
+                        sendNotification(`It's time for ${name} prayer`, "Take a moment to pray.");
+                    }
+                }
+
+                if (!next) next = { name: 'Fajr', time: timings.Fajr, isTomorrow: true };
+                setNextPrayer(next);
+            };
+
+            const toggleHabit = (habitId, date) => {
+                const dateKey = formatDateKey(date);
+                const key = `${habitId}-${dateKey}`;
+                setHistory(prev => {
+                    const newHistory = { ...prev };
+                    if (newHistory[key]) delete newHistory[key];
+                    else newHistory[key] = true;
+                    return newHistory;
+                });
+            };
+
+            const updateSugar = (amount) => {
+                setSugarHistory(prev => ({
+                    ...prev,
+                    [todayKey]: Math.max(0, (prev[todayKey] || 0) + amount)
+                }));
+            };
+
+            const calculateStats = () => {
+                let totalHabits = habits.length;
+                let completedToday = habits.filter(h => history[`${h.id}-${todayKey}`]).length;
+                let completionRate = totalHabits === 0 ? 0 : Math.round((completedToday / totalHabits) * 100);
+                return { completionRate, completedToday, totalHabits };
+            };
+
+            const getStreak = (habitId) => {
+                let streak = 0;
+                const today = new Date();
+                if (history[`${habitId}-${formatDateKey(today)}`]) streak++;
+                for (let i = 1; i < 365; i++) {
+                    const d = new Date();
+                    d.setDate(d.getDate() - i);
+                    if (history[`${habitId}-${formatDateKey(d)}`]) streak++;
+                    else if (i === 1 && !history[`${habitId}-${formatDateKey(today)}`]) continue;
+                    else break;
+                }
+                return streak;
+            };
+
+            const addHabit = () => {
+                if (!newHabitName.trim()) return;
+                const newHabit = {
+                    id: Date.now(),
+                    name: newHabitName,
+                    category: 'Custom',
+                    color: selectedColor,
+                    icon: '⚡',
+                    reminderTime: newHabitTime || null
+                };
+                setHabits([...habits, newHabit]);
+                setNewHabitName('');
+                setNewHabitTime('');
+                setIsAddModalOpen(false);
+            };
+
+            const deleteHabit = (id) => {
+                setHabits(habits.filter(h => h.id !== id));
+            };
+
+            const stats = calculateStats();
+            const days = getLast7Days();
+            const currentSugar = sugarHistory[todayKey] || 0;
+            const sugarPercentage = Math.min(100, (currentSugar / SUGAR_LIMIT) * 100);
+            const getColorHex = (colorName) => THEME.colors[colorName] || THEME.colors.accentCoral;
+
+            return (
+                <div className="min-h-screen w-full flex justify-center font-sans" style={{ backgroundColor: THEME.colors.bg }}>
+                    
+                    {toastMessage && (
+                        <div className="fixed top-4 z-[60] animate-slide-down px-4 w-full max-w-md">
+                            <div className="bg-white rounded-2xl shadow-2xl p-4 flex items-center gap-4 border-l-4 border-[#5A7BEF]">
+                                <div className="bg-blue-100 p-3 rounded-full text-[#5A7BEF]">
+                                    <Bell size={24} />
+                                </div>
+                                <div>
+                                    <h4 className="font-black text-lg text-black uppercase leading-none mb-1">{toastMessage.title}</h4>
+                                    <p className="text-sm text-gray-600 font-medium">{toastMessage.body}</p>
+                                </div>
+                                <button onClick={() => setToastMessage(null)} className="ml-auto text-gray-400 hover:text-black">
+                                    <X size={20} />
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="w-full max-w-md min-h-screen relative shadow-2xl overflow-hidden flex flex-col" style={{ backgroundColor: THEME.colors.panel }}>
+                        
+                        <div className="pt-8 pb-4 px-6 flex justify-between items-center z-10">
+                            <button className="p-2 rounded-full bg-[#2B2B2B] text-white hover:bg-opacity-80 transition">
+                                <Settings size={20} />
+                            </button>
+                            <h1 className="text-xl font-bold tracking-wider text-white">OPERATIONS</h1>
+                            <div className="w-10 h-10 rounded-full bg-[#F9E58C] flex items-center justify-center border-2 border-[#2B2B2B] overflow-hidden">
+                                <img src="https://api.dicebear.com/9.x/avataaars/svg?seed=Felix" alt="User" className="w-full h-full" />
+                            </div>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto px-4 pb-28 space-y-4 no-scrollbar">
+                            
+                            <div className="w-full rounded-[32px] p-5 relative overflow-hidden" style={{ backgroundColor: THEME.colors.accentBlue }}>
+                                <div className="flex justify-between items-start mb-4 relative z-10">
+                                    <div className="flex items-center gap-2">
+                                        <div className="bg-black/20 p-1.5 rounded-lg">
+                                            <MapPin size={14} className="text-white" />
+                                        </div>
+                                        <span className="text-xs font-bold tracking-widest text-white opacity-90 uppercase">Birtouta, DZ</span>
+                                    </div>
+                                    <Bell size={18} className="text-white animate-pulse" />
+                                </div>
+                                <div className="relative z-10 mb-6">
+                                    <h2 className="text-sm font-medium text-white/80 mb-1">NEXT PRAYER</h2>
+                                    <div className="flex items-baseline gap-3">
+                                        {loadingPrayers ? (
+                                            <span className="text-3xl font-black text-white animate-pulse">LOADING...</span>
+                                        ) : (
+                                            <>
+                                                <h1 className="text-4xl font-black text-white uppercase leading-none">{nextPrayer ? nextPrayer.name : '--'}</h1>
+                                                <span className="text-xl font-bold text-white/70">{nextPrayer ? convertTo12Hour(nextPrayer.time) : '--:--'}</span>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-5 gap-1 relative z-10 bg-black/10 rounded-2xl p-2">
+                                    {!loadingPrayers && prayerTimes && Object.entries(prayerTimes).map(([name, time]) => {
+                                        const isNext = nextPrayer && nextPrayer.name === name;
+                                        return (
+                                            <div key={name} className={`flex flex-col items-center justify-center p-1 rounded-xl ${isNext ? 'bg-white text-black shadow-lg' : 'text-white/60'}`}>
+                                                <span className="text-[9px] font-black uppercase mb-1">{name.substr(0, 3)}</span>
+                                                <span className="text-[10px] font-bold">{time}</span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                <div className="absolute -right-8 -top-8 w-32 h-32 bg-white opacity-10 rounded-full blur-2xl pointer-events-none"></div>
+                            </div>
+
+                            <div className="w-full rounded-[32px] p-5 relative overflow-hidden" style={{ backgroundColor: THEME.colors.accentPink }}>
+                                <div className="flex justify-between items-start mb-2 relative z-10">
+                                    <div className="flex items-center gap-2">
+                                        <div className="bg-black/10 p-1.5 rounded-lg text-black">
+                                            <Candy size={16} strokeWidth={2.5} />
+                                        </div>
+                                        <span className="text-xs font-black tracking-widest text-black opacity-60">GLUCOSE MONITOR</span>
+                                    </div>
+                                    <span className="text-xs font-bold text-black bg-white/30 px-2 py-1 rounded-lg">LIMIT: {SUGAR_LIMIT}g</span>
+                                </div>
+
+                                <div className="relative z-10 flex flex-col gap-4">
+                                    <div className="flex items-baseline gap-1 mt-2">
+                                        <span className="text-5xl font-black text-black leading-none">{currentSugar}</span>
+                                        <span className="text-xl font-bold text-black opacity-60">g</span>
+                                    </div>
+
+                                    <div className="w-full bg-black/10 h-3 rounded-full overflow-hidden">
+                                        <div 
+                                            className={`h-full transition-all duration-500 ease-out ${currentSugar > SUGAR_LIMIT ? 'bg-[#F25C54]' : 'bg-black'}`}
+                                            style={{ width: `${sugarPercentage}%` }}
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-4 gap-2">
+                                        <button onClick={() => updateSugar(-1)} className="bg-black/5 hover:bg-black/10 rounded-xl h-12 flex items-center justify-center text-black transition-colors">
+                                            <Minus size={18} />
+                                        </button>
+                                        <button onClick={() => updateSugar(4)} className="bg-white/60 hover:bg-white rounded-xl h-12 flex flex-col items-center justify-center text-black transition-colors shadow-sm">
+                                            <span className="text-xs font-bold">+4g</span>
+                                            <span className="text-[8px] opacity-60 uppercase">Cube</span>
+                                        </button>
+                                        <button onClick={() => updateSugar(12)} className="bg-white/60 hover:bg-white rounded-xl h-12 flex flex-col items-center justify-center text-black transition-colors shadow-sm">
+                                            <span className="text-xs font-bold">+12g</span>
+                                            <span className="text-[8px] opacity-60 uppercase">Treat</span>
+                                        </button>
+                                        <button onClick={() => updateSugar(35)} className="bg-white/60 hover:bg-white rounded-xl h-12 flex flex-col items-center justify-center text-black transition-colors shadow-sm">
+                                            <span className="text-xs font-bold">+35g</span>
+                                            <span className="text-[8px] opacity-60 uppercase">Soda</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="rounded-[28px] p-5 flex flex-col justify-between h-32" style={{ backgroundColor: THEME.colors.accentCoral }}>
+                                    <div className="flex justify-between items-start">
+                                        <span className="bg-black/20 text-black font-bold text-[10px] px-2 py-1 rounded-lg">COMPLETION</span>
+                                        <ArrowUpRight className="text-black" size={20} />
+                                    </div>
+                                    <div>
+                                        <span className="text-4xl font-black text-black">{stats.completionRate}%</span>
+                                        <p className="text-xs text-black font-bold opacity-70">Keep pushing!</p>
+                                    </div>
+                                </div>
+                                <div className="rounded-[28px] p-5 flex flex-col justify-between h-32 bg-[#2B2B2B] text-white">
+                                    <div className="flex justify-between items-start">
+                                        <span className="bg-white/10 text-[#CCCCCC] font-bold text-[10px] px-2 py-1 rounded-lg">COMPLETED</span>
+                                        <Check className="text-[#9FE6A0]" size={20} />
+                                    </div>
+                                    <div>
+                                        <span className="text-4xl font-black">{stats.completedToday}<span className="text-xl text-[#666]">/{stats.totalHabits}</span></span>
+                                        <p className="text-xs text-[#CCCCCC] font-medium opacity-70">Tasks done today</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-between items-end pt-2 px-2">
+                                <h3 className="text-white font-bold text-xl tracking-wide">TASKS</h3>
+                                <span className="text-[#CCCCCC] text-xs mb-1">This Week</span>
+                            </div>
+
+                            <div className="space-y-3">
+                                {habits.map((habit) => {
+                                    const streak = getStreak(habit.id);
+                                    const habitColor = getColorHex(habit.color);
+                                    const isCompletedToday = history[`${habit.id}-${todayKey}`];
+
+                                    return (
+                                        <div key={habit.id} className="bg-[#2B2B2B] rounded-[28px] p-4 group relative overflow-hidden transition-all active:scale-[0.99]">
+                                            <div className="flex justify-between items-start mb-4 relative z-10">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-xl bg-[#1D1D1D] border border-white/5">
+                                                        {habit.icon}
+                                                    </div>
+                                                    <div>
+                                                        <div className="flex items-center gap-2">
+                                                            <h4 className="text-white font-bold text-lg leading-tight">{habit.name}</h4>
+                                                            {streak > 2 && (
+                                                                <span className="bg-[#F7941D] text-black text-[10px] font-black px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                                                                    🔥 {streak}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex items-center gap-3 mt-0.5">
+                                                            <span className="text-[#CCCCCC] text-xs font-mono uppercase opacity-60">{habit.category}</span>
+                                                            {habit.reminderTime && (
+                                                                <div className="flex items-center gap-1 bg-white/10 px-1.5 py-0.5 rounded text-[10px] text-[#CCCCCC]">
+                                                                    <Clock size={10} />
+                                                                    <span>{convertTo12Hour(habit.reminderTime)}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <button onClick={() => deleteHabit(habit.id)} className="text-[#CCCCCC] opacity-50 hover:text-[#F25C54] hover:opacity-100 transition">
+                                                    <MoreHorizontal size={20} />
+                                                </button>
+                                            </div>
+
+                                            <div className="flex justify-between items-center bg-[#1D1D1D] rounded-xl p-2 relative z-10">
+                                                {days.map((date) => {
+                                                    const dKey = formatDateKey(date);
+                                                    const isCompleted = history[`${habit.id}-${dKey}`];
+                                                    const isToday = dKey === todayKey;
+                                                    return (
+                                                        <div key={dKey} className="flex flex-col items-center gap-1">
+                                                            <span className={`text-[9px] font-bold uppercase ${isToday ? 'text-white' : 'text-[#666]'}`}>
+                                                                {formatDayName(date).charAt(0)}
+                                                            </span>
+                                                            <button
+                                                                onClick={() => toggleHabit(habit.id, date)}
+                                                                className={`
+                                                                    w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-300
+                                                                    ${isCompleted 
+                                                                        ? `text-black shadow-lg scale-100 font-bold` 
+                                                                        : 'bg-[#2B2B2B] text-transparent hover:bg-[#333] scale-90 border border-white/5'}
+                                                                `}
+                                                                style={{ backgroundColor: isCompleted ? habitColor : '' }}
+                                                            >
+                                                                {isCompleted && <Check size={14} strokeWidth={4} />}
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-current to-transparent opacity-5 rounded-full blur-2xl pointer-events-none" style={{ color: habitColor }} />
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="absolute bottom-6 left-0 right-0 flex justify-center z-20 pointer-events-none">
+                            <button 
+                                onClick={() => setIsAddModalOpen(true)}
+                                className="w-16 h-16 bg-[#F25C54] rounded-[24px] text-black flex items-center justify-center shadow-2xl shadow-black/50 pointer-events-auto hover:scale-110 transition-transform duration-300 active:scale-95"
+                            >
+                                <Plus size={32} strokeWidth={2.5} />
+                            </button>
+                        </div>
+                    
+                    </div>
+
+                    {isAddModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
+                            <div className="absolute inset-0 bg-[#C6D1C0]/80 backdrop-blur-sm transition-opacity" onClick={() => setIsAddModalOpen(false)} />
+                            <div className="bg-[#1D1D1D] w-full max-w-md rounded-t-[40px] sm:rounded-[40px] p-8 z-10 animate-slide-up border-t border-white/10 shadow-2xl">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h3 className="text-2xl font-black text-white tracking-wide">NEW PROTOCOL</h3>
+                                    <button onClick={() => setIsAddModalOpen(false)} className="p-2 bg-[#2B2B2B] rounded-full text-white hover:bg-[#333]">
+                                        <X size={20} />
+                                    </button>
+                                </div>
+                                <div className="space-y-6">
+                                    <div>
+                                        <label className="block text-[#CCCCCC] text-xs font-bold uppercase tracking-wider mb-3">Protocol Name</label>
+                                        <input
+                                            type="text"
+                                            placeholder="e.g., Quality Control"
+                                            value={newHabitName}
+                                            onChange={(e) => setNewHabitName(e.target.value)}
+                                            className="w-full bg-[#2B2B2B] border-2 border-transparent focus:border-[#F25C54] rounded-2xl px-6 py-4 text-white text-lg font-medium placeholder-[#666] focus:outline-none transition-colors"
+                                            autoFocus
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-[#CCCCCC] text-xs font-bold uppercase tracking-wider mb-3">Reminder Time (Optional)</label>
+                                        <div className="relative">
+                                            <input
+                                                type="time"
+                                                value={newHabitTime}
+                                                onChange={(e) => setNewHabitTime(e.target.value)}
+                                                className="w-full bg-[#2B2B2B] border-2 border-transparent focus:border-[#F25C54] rounded-2xl px-6 py-4 text-white text-lg font-medium placeholder-[#666] focus:outline-none transition-colors appearance-none"
+                                            />
+                                            <div className="absolute right-4 top-1/2 transform -translate-y-1/2 text-[#CCCCCC] pointer-events-none">
+                                                <Clock size={20} />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[#CCCCCC] text-xs font-bold uppercase tracking-wider mb-3">Category Color</label>
+                                        <div className="flex gap-4">
+                                            {['accentCoral', 'accentYellow', 'accentBlue', 'success'].map((c) => (
+                                                <button
+                                                    key={c}
+                                                    onClick={() => setSelectedColor(c)}
+                                                    className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-transform ${selectedColor === c ? 'scale-110 ring-2 ring-white' : 'opacity-70 hover:opacity-100'}`}
+                                                    style={{ backgroundColor: THEME.colors[c] }}
+                                                >
+                                                    {selectedColor === c && <Check size={24} className="text-black" strokeWidth={3} />}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={addHabit}
+                                        className="w-full bg-white text-black font-black text-lg py-5 rounded-2xl hover:bg-[#F2F2F2] active:scale-[0.98] transition-all mt-4 uppercase tracking-wide"
+                                    >
+                                        Initialize
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
